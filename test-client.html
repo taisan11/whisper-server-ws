@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whisper WebSocket Test Client</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 30px;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+            font-size: 24px;
+        }
+        .status {
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+        .status.disconnected {
+            background: #fee;
+            color: #c33;
+        }
+        .status.connected {
+            background: #efe;
+            color: #3a3;
+        }
+        .section {
+            margin-bottom: 30px;
+        }
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #555;
+        }
+        input[type="file"] {
+            display: block;
+            margin-bottom: 15px;
+            padding: 10px;
+            border: 2px dashed #ddd;
+            border-radius: 4px;
+            width: 100%;
+            cursor: pointer;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-right: 10px;
+            transition: background 0.2s;
+        }
+        button:hover:not(:disabled) {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .record-btn {
+            background: #dc3545;
+        }
+        .record-btn:hover:not(:disabled) {
+            background: #c82333;
+        }
+        .record-btn.recording {
+            background: #28a745;
+        }
+        .file-info {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            font-size: 14px;
+            color: #666;
+        }
+        .result {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 4px;
+            min-height: 100px;
+            margin-top: 15px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-size: 16px;
+            line-height: 1.6;
+        }
+        .result.loading {
+            color: #999;
+            font-style: italic;
+        }
+        .result.error {
+            background: #fee;
+            color: #c33;
+        }
+        .result.success {
+            background: #efe;
+            color: #333;
+        }
+        .log {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 4px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        .log-entry {
+            margin-bottom: 5px;
+        }
+        .log-time {
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 Whisper WebSocket Test Client</h1>
+        
+        <div id="status" class="status disconnected">
+            ⚠️ 接続されていません
+        </div>
+
+        <div class="section">
+            <div class="section-title">1️⃣ WebSocket接続</div>
+            <button id="connectBtn" onclick="connect()">接続</button>
+            <button id="disconnectBtn" onclick="disconnect()" disabled>切断</button>
+        </div>
+
+        <div class="section">
+            <div class="section-title">2️⃣ 音声録音（マイク）</div>
+            <button class="record-btn" id="recordBtn" onclick="toggleRecording()" disabled>
+                🎙️ 録音開始
+            </button>
+            <div id="recordInfo" class="file-info" style="display:none;"></div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">3️⃣ PCMファイルアップロード</div>
+            <input type="file" id="fileInput" accept=".pcm,.raw,.f32" onchange="handleFileSelect()" disabled>
+            <div id="fileInfo" class="file-info" style="display:none;"></div>
+            <button id="uploadBtn" onclick="uploadFile()" disabled>📤 アップロード</button>
+        </div>
+
+        <div class="section">
+            <div class="section-title">📝 文字起こし結果</div>
+            <div id="result" class="result">結果がここに表示されます...</div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">📋 ログ</div>
+            <div id="log" class="log"></div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let selectedFile = null;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let audioContext = null;
+
+        function addLog(message) {
+            const log = document.getElementById('log');
+            const time = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.innerHTML = `<span class="log-time">[${time}]</span> ${message}`;
+            log.appendChild(entry);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function updateStatus(connected) {
+            const status = document.getElementById('status');
+            const connectBtn = document.getElementById('connectBtn');
+            const disconnectBtn = document.getElementById('disconnectBtn');
+            const fileInput = document.getElementById('fileInput');
+            const uploadBtn = document.getElementById('uploadBtn');
+            const recordBtn = document.getElementById('recordBtn');
+
+            if (connected) {
+                status.className = 'status connected';
+                status.textContent = '✅ 接続されました';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                fileInput.disabled = false;
+                recordBtn.disabled = false;
+            } else {
+                status.className = 'status disconnected';
+                status.textContent = '⚠️ 接続されていません';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                fileInput.disabled = true;
+                uploadBtn.disabled = true;
+                recordBtn.disabled = true;
+            }
+        }
+
+        function connect() {
+            addLog('WebSocketに接続中...');
+            ws = new WebSocket('ws://127.0.0.1:9000');
+
+            ws.onopen = () => {
+                addLog('✅ WebSocket接続成功');
+                updateStatus(true);
+            };
+
+            ws.onmessage = (event) => {
+                addLog(`📨 受信: ${event.data}`);
+                try {
+                    const data = JSON.parse(event.data);
+                    const result = document.getElementById('result');
+                    
+                    if (data.error) {
+                        result.className = 'result error';
+                        result.textContent = `❌ エラー: ${data.error}`;
+                    } else if (data.status === 'queued') {
+                        result.className = 'result loading';
+                        result.textContent = '⏳ 処理中...';
+                    } else if (data.transcription !== undefined) {
+                        result.className = 'result success';
+                        result.textContent = data.transcription || '(無音または認識できませんでした)';
+                    }
+                } catch (e) {
+                    addLog(`⚠️ JSON解析エラー: ${e.message}`);
+                }
+            };
+
+            ws.onerror = (error) => {
+                addLog(`❌ エラー: ${error}`);
+            };
+
+            ws.onclose = () => {
+                addLog('🔌 WebSocket接続が切断されました');
+                updateStatus(false);
+                ws = null;
+            };
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                addLog('切断しました');
+            }
+        }
+
+        function handleFileSelect() {
+            const fileInput = document.getElementById('fileInput');
+            const fileInfo = document.getElementById('fileInfo');
+            const uploadBtn = document.getElementById('uploadBtn');
+            
+            selectedFile = fileInput.files[0];
+            if (selectedFile) {
+                const sizeKB = (selectedFile.size / 1024).toFixed(2);
+                const samples = selectedFile.size / 4; // f32 = 4 bytes
+                const duration = (samples / 16000).toFixed(2);
+                
+                fileInfo.style.display = 'block';
+                fileInfo.innerHTML = `
+                    📄 ファイル: ${selectedFile.name}<br>
+                    📊 サイズ: ${sizeKB} KB (${samples.toLocaleString()} samples)<br>
+                    ⏱️ 推定時間: ${duration} 秒 (16kHz想定)
+                `;
+                uploadBtn.disabled = false;
+                addLog(`ファイル選択: ${selectedFile.name} (${sizeKB} KB)`);
+            }
+        }
+
+        async function uploadFile() {
+            if (!selectedFile || !ws || ws.readyState !== WebSocket.OPEN) {
+                addLog('❌ ファイルが選択されていないか、接続されていません');
+                return;
+            }
+
+            addLog(`📤 アップロード開始: ${selectedFile.name}`);
+            const arrayBuffer = await selectedFile.arrayBuffer();
+            
+            ws.send(arrayBuffer);
+            addLog(`✅ 送信完了 (${arrayBuffer.byteLength} bytes)`);
+            
+            const result = document.getElementById('result');
+            result.className = 'result loading';
+            result.textContent = '⏳ 文字起こし処理中...';
+        }
+
+        async function toggleRecording() {
+            const recordBtn = document.getElementById('recordBtn');
+            const recordInfo = document.getElementById('recordInfo');
+
+            if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    audioContext = new AudioContext({ sampleRate: 16000 });
+                    addLog('🎤 録音を開始しました (16kHz)');
+                    
+                    mediaRecorder = new MediaRecorder(stream);
+                    audioChunks = [];
+                    
+                    mediaRecorder.ondataavailable = (event) => {
+                        audioChunks.push(event.data);
+                    };
+                    
+                    mediaRecorder.onstop = async () => {
+                        addLog('🛑 録音を停止しました');
+                        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                        await processRecordedAudio(audioBlob);
+                        stream.getTracks().forEach(track => track.stop());
+                    };
+                    
+                    mediaRecorder.start();
+                    recordBtn.textContent = '⏹️ 録音停止';
+                    recordBtn.classList.add('recording');
+                    recordInfo.style.display = 'block';
+                    recordInfo.textContent = '🔴 録音中...';
+                    
+                } catch (err) {
+                    addLog(`❌ マイクアクセスエラー: ${err.message}`);
+                }
+            } else {
+                mediaRecorder.stop();
+                recordBtn.textContent = '🎙️ 録音開始';
+                recordBtn.classList.remove('recording');
+                recordInfo.style.display = 'none';
+            }
+        }
+
+        async function processRecordedAudio(audioBlob) {
+            try {
+                addLog('🔄 音声を16kHz PCM f32に変換中...');
+                
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                
+                // Resample to 16kHz if needed
+                let audioData;
+                if (audioBuffer.sampleRate !== 16000) {
+                    const offlineContext = new OfflineAudioContext(1, audioBuffer.duration * 16000, 16000);
+                    const source = offlineContext.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(offlineContext.destination);
+                    source.start(0);
+                    const resampledBuffer = await offlineContext.startRendering();
+                    audioData = resampledBuffer.getChannelData(0);
+                } else {
+                    audioData = audioBuffer.getChannelData(0);
+                }
+                
+                // Convert to f32 binary
+                const pcmData = new Float32Array(audioData);
+                const bytes = new Uint8Array(pcmData.buffer);
+                
+                addLog(`✅ 変換完了: ${pcmData.length} samples (${audioBuffer.duration.toFixed(2)}秒)`);
+                
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(bytes);
+                    addLog(`📤 送信完了 (${bytes.byteLength} bytes)`);
+                    
+                    const result = document.getElementById('result');
+                    result.className = 'result loading';
+                    result.textContent = '⏳ 文字起こし処理中...';
+                }
+            } catch (err) {
+                addLog(`❌ 音声処理エラー: ${err.message}`);
+            }
+        }
+
+        // 初期化
+        addLog('ページを読み込みました');
+        addLog('接続ボタンをクリックしてWebSocketサーバーに接続してください');
+    </script>
+</body>
+</html>

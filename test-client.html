@@ -1,396 +1,488 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ja">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Whisper WebSocket Test Client</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: #f5f5f5;
-            padding: 20px;
-        }
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            padding: 30px;
-        }
-        h1 {
-            color: #333;
-            margin-bottom: 30px;
-            font-size: 24px;
-        }
-        .status {
-            padding: 12px;
-            border-radius: 4px;
-            margin-bottom: 20px;
-            font-weight: 500;
-        }
-        .status.disconnected {
-            background: #fee;
-            color: #c33;
-        }
-        .status.connected {
-            background: #efe;
-            color: #3a3;
-        }
-        .section {
-            margin-bottom: 30px;
-        }
-        .section-title {
-            font-size: 18px;
-            font-weight: 600;
-            margin-bottom: 15px;
-            color: #555;
-        }
-        input[type="file"] {
-            display: block;
-            margin-bottom: 15px;
-            padding: 10px;
-            border: 2px dashed #ddd;
-            border-radius: 4px;
-            width: 100%;
-            cursor: pointer;
-        }
-        button {
-            background: #007bff;
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 4px;
-            font-size: 16px;
-            cursor: pointer;
-            margin-right: 10px;
-            transition: background 0.2s;
-        }
-        button:hover:not(:disabled) {
-            background: #0056b3;
-        }
-        button:disabled {
-            background: #ccc;
-            cursor: not-allowed;
-        }
-        .record-btn {
-            background: #dc3545;
-        }
-        .record-btn:hover:not(:disabled) {
-            background: #c82333;
-        }
-        .record-btn.recording {
-            background: #28a745;
-        }
-        .file-info {
-            background: #f8f9fa;
-            padding: 10px;
-            border-radius: 4px;
-            margin-bottom: 15px;
-            font-size: 14px;
-            color: #666;
-        }
-        .result {
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 4px;
-            min-height: 100px;
-            margin-top: 15px;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-            font-size: 16px;
-            line-height: 1.6;
-        }
-        .result.loading {
-            color: #999;
-            font-style: italic;
-        }
-        .result.error {
-            background: #fee;
-            color: #c33;
-        }
-        .result.success {
-            background: #efe;
-            color: #333;
-        }
-        .log {
-            background: #1e1e1e;
-            color: #d4d4d4;
-            padding: 15px;
-            border-radius: 4px;
-            max-height: 200px;
-            overflow-y: auto;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 12px;
-            line-height: 1.4;
-        }
-        .log-entry {
-            margin-bottom: 5px;
-        }
-        .log-time {
-            color: #888;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🎤 Whisper WebSocket Test Client</h1>
-        
-        <div id="status" class="status disconnected">
-            ⚠️ 接続されていません
-        </div>
-
-        <div class="section">
-            <div class="section-title">1️⃣ WebSocket接続</div>
-            <button id="connectBtn" onclick="connect()">接続</button>
-            <button id="disconnectBtn" onclick="disconnect()" disabled>切断</button>
-        </div>
-
-        <div class="section">
-            <div class="section-title">2️⃣ 音声録音（マイク）</div>
-            <button class="record-btn" id="recordBtn" onclick="toggleRecording()" disabled>
-                🎙️ 録音開始
-            </button>
-            <div id="recordInfo" class="file-info" style="display:none;"></div>
-        </div>
-
-        <div class="section">
-            <div class="section-title">3️⃣ PCMファイルアップロード</div>
-            <input type="file" id="fileInput" accept=".pcm,.raw,.f32" onchange="handleFileSelect()" disabled>
-            <div id="fileInfo" class="file-info" style="display:none;"></div>
-            <button id="uploadBtn" onclick="uploadFile()" disabled>📤 アップロード</button>
-        </div>
-
-        <div class="section">
-            <div class="section-title">📝 文字起こし結果</div>
-            <div id="result" class="result">結果がここに表示されます...</div>
-        </div>
-
-        <div class="section">
-            <div class="section-title">📋 ログ</div>
-            <div id="log" class="log"></div>
-        </div>
-    </div>
-
-    <script>
-        let ws = null;
-        let selectedFile = null;
-        let mediaRecorder = null;
-        let audioChunks = [];
-        let audioContext = null;
-
-        function addLog(message) {
-            const log = document.getElementById('log');
-            const time = new Date().toLocaleTimeString();
-            const entry = document.createElement('div');
-            entry.className = 'log-entry';
-            entry.innerHTML = `<span class="log-time">[${time}]</span> ${message}`;
-            log.appendChild(entry);
-            log.scrollTop = log.scrollHeight;
-        }
-
-        function updateStatus(connected) {
-            const status = document.getElementById('status');
-            const connectBtn = document.getElementById('connectBtn');
-            const disconnectBtn = document.getElementById('disconnectBtn');
-            const fileInput = document.getElementById('fileInput');
-            const uploadBtn = document.getElementById('uploadBtn');
-            const recordBtn = document.getElementById('recordBtn');
-
-            if (connected) {
-                status.className = 'status connected';
-                status.textContent = '✅ 接続されました';
-                connectBtn.disabled = true;
-                disconnectBtn.disabled = false;
-                fileInput.disabled = false;
-                recordBtn.disabled = false;
-            } else {
-                status.className = 'status disconnected';
-                status.textContent = '⚠️ 接続されていません';
-                connectBtn.disabled = false;
-                disconnectBtn.disabled = true;
-                fileInput.disabled = true;
-                uploadBtn.disabled = true;
-                recordBtn.disabled = true;
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Whisper + VAD WebSocket Test Client</title>
+        <style>
+            body {
+                font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+                max-width: 800px;
+                margin: 50px auto;
+                padding: 20px;
+                background-color: #f5f5f5;
             }
-        }
+            .container {
+                background: white;
+                padding: 30px;
+                border-radius: 10px;
+                box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            }
+            h1 {
+                color: #333;
+                text-align: center;
+                margin-bottom: 10px;
+            }
+            .subtitle {
+                text-align: center;
+                color: #666;
+                margin-bottom: 30px;
+                font-size: 14px;
+            }
+            .status {
+                padding: 15px;
+                margin-bottom: 20px;
+                border-radius: 5px;
+                text-align: center;
+                font-weight: bold;
+            }
+            .status.disconnected {
+                background-color: #ffebee;
+                color: #c62828;
+            }
+            .status.connected {
+                background-color: #e8f5e9;
+                color: #2e7d32;
+            }
+            .status.recording {
+                background-color: #fff3e0;
+                color: #e65100;
+                animation: pulse 1.5s infinite;
+            }
+            @keyframes pulse {
+                0%,
+                100% {
+                    opacity: 1;
+                }
+                50% {
+                    opacity: 0.7;
+                }
+            }
+            button {
+                width: 100%;
+                padding: 15px;
+                font-size: 16px;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+                margin-bottom: 10px;
+                transition: all 0.3s;
+            }
+            button:hover:not(:disabled) {
+                transform: translateY(-2px);
+                box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+            }
+            button:disabled {
+                opacity: 0.5;
+                cursor: not-allowed;
+            }
+            #connectBtn {
+                background-color: #4caf50;
+                color: white;
+            }
+            #disconnectBtn {
+                background-color: #f44336;
+                color: white;
+            }
+            #startRecordBtn {
+                background-color: #2196f3;
+                color: white;
+            }
+            #stopRecordBtn {
+                background-color: #ff9800;
+                color: white;
+            }
+            .info-box {
+                background-color: #e3f2fd;
+                padding: 15px;
+                border-radius: 5px;
+                margin-bottom: 20px;
+                border-left: 4px solid #2196f3;
+            }
+            .info-box h3 {
+                margin-top: 0;
+                color: #1976d2;
+            }
+            .info-box ul {
+                margin: 10px 0;
+                padding-left: 20px;
+            }
+            .info-box li {
+                margin: 5px 0;
+                color: #555;
+            }
+            #results {
+                margin-top: 20px;
+                padding: 15px;
+                background-color: #fafafa;
+                border-radius: 5px;
+                min-height: 100px;
+                max-height: 400px;
+                overflow-y: auto;
+                border: 1px solid #ddd;
+            }
+            .result-item {
+                padding: 10px;
+                margin-bottom: 10px;
+                border-radius: 5px;
+                background-color: white;
+                border-left: 4px solid #4caf50;
+            }
+            .result-item.error {
+                border-left-color: #f44336;
+                background-color: #ffebee;
+            }
+            .result-item.status {
+                border-left-color: #ff9800;
+                background-color: #fff3e0;
+            }
+            .result-item.partial {
+                border-left-color: #9c27b0;
+                background-color: #f3e5f5;
+            }
+            .timestamp {
+                font-size: 12px;
+                color: #999;
+                margin-bottom: 5px;
+            }
+            .text {
+                color: #333;
+                font-size: 14px;
+            }
+            .vad-info {
+                font-size: 12px;
+                color: #666;
+                margin-top: 5px;
+                font-style: italic;
+            }
+            .segment-list {
+                margin-top: 10px;
+                padding: 8px;
+                background-color: #f5f5f5;
+                border-radius: 4px;
+                font-size: 12px;
+            }
+            .segment-item {
+                padding: 4px 0;
+                color: #555;
+            }
+            .segment-time {
+                color: #2196f3;
+                font-weight: bold;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🎤 Whisper + Silero VAD Test Client</h1>
+            <div class="subtitle">音声認識 with Voice Activity Detection</div>
 
-        function connect() {
-            addLog('WebSocketに接続中...');
-            ws = new WebSocket('ws://127.0.0.1:9000');
+            <div id="statusBar" class="status disconnected">未接続</div>
 
-            ws.onopen = () => {
-                addLog('✅ WebSocket接続成功');
-                updateStatus(true);
-            };
+            <div class="info-box">
+                <h3>📋 使い方</h3>
+                <ul>
+                    <li>「接続」ボタンでWebSocketサーバーに接続</li>
+                    <li>「録音開始」でマイクから音声を録音</li>
+                    <li>Silero VADが自動的に音声区間を検出</li>
+                    <li>音声区間のみがWhisperで文字起こしされます</li>
+                    <li>結果はリアルタイムで表示されます</li>
+                </ul>
+            </div>
 
-            ws.onmessage = (event) => {
-                addLog(`📨 受信: ${event.data}`);
-                try {
-                    const data = JSON.parse(event.data);
-                    const result = document.getElementById('result');
-                    
-                    if (data.error) {
-                        result.className = 'result error';
-                        result.textContent = `❌ エラー: ${data.error}`;
-                    } else if (data.status === 'queued') {
-                        result.className = 'result loading';
-                        result.textContent = '⏳ 処理中...';
-                    } else if (data.transcription !== undefined) {
-                        result.className = 'result success';
-                        result.textContent = data.transcription || '(無音または認識できませんでした)';
+            <button id="connectBtn">🔌 接続</button>
+            <button id="disconnectBtn" disabled>❌ 切断</button>
+            <button id="startRecordBtn" disabled>🎙️ 録音開始</button>
+            <button id="stopRecordBtn" disabled>⏹️ 録音停止</button>
+
+            <div id="results">
+                <div style="text-align: center; color: #999">
+                    結果がここに表示されます
+                </div>
+            </div>
+        </div>
+
+        <script>
+            let ws = null;
+            let audioContext = null;
+            let mediaStream = null;
+            let processor = null;
+            let isRecording = false;
+
+            const statusBar = document.getElementById("statusBar");
+            const connectBtn = document.getElementById("connectBtn");
+            const disconnectBtn = document.getElementById("disconnectBtn");
+            const startRecordBtn = document.getElementById("startRecordBtn");
+            const stopRecordBtn = document.getElementById("stopRecordBtn");
+            const results = document.getElementById("results");
+
+            // WebSocket接続
+            connectBtn.addEventListener("click", () => {
+                ws = new WebSocket("ws://127.0.0.1:9000");
+
+                ws.onopen = () => {
+                    console.log("WebSocket connected");
+                    updateStatus("connected", "✅ 接続中");
+                    connectBtn.disabled = true;
+                    disconnectBtn.disabled = false;
+                    startRecordBtn.disabled = false;
+                    addResult("接続しました", "status");
+                };
+
+                ws.onmessage = (event) => {
+                    console.log("Received:", event.data);
+                    try {
+                        const data = JSON.parse(event.data);
+
+                        if (data.status === "processing") {
+                            addResult(
+                                "音声データを処理中... (VADで音声区間を検出)",
+                                "status",
+                            );
+                        } else if (data.transcription !== undefined) {
+                            if (data.transcription === "" && data.message) {
+                                addResult(`結果: ${data.message}`, "status");
+                            } else {
+                                // セグメント情報と部分結果フラグを含めて表示
+                                const partialTag = data.partial
+                                    ? " [部分結果]"
+                                    : "";
+                                addResult(
+                                    `📝 ${data.transcription}${partialTag}`,
+                                    data.partial ? "partial" : "result",
+                                    data.segments,
+                                    data.duration,
+                                );
+                            }
+                        } else if (data.error) {
+                            addResult(`❌ エラー: ${data.error}`, "error");
+                        }
+                    } catch (e) {
+                        console.error("Parse error:", e);
+                        addResult(`Parse error: ${event.data}`, "error");
                     }
-                } catch (e) {
-                    addLog(`⚠️ JSON解析エラー: ${e.message}`);
+                };
+
+                ws.onerror = (error) => {
+                    console.error("WebSocket error:", error);
+                    addResult("WebSocketエラーが発生しました", "error");
+                };
+
+                ws.onclose = () => {
+                    console.log("WebSocket disconnected");
+                    updateStatus("disconnected", "❌ 未接続");
+                    connectBtn.disabled = false;
+                    disconnectBtn.disabled = true;
+                    startRecordBtn.disabled = true;
+                    stopRecordBtn.disabled = true;
+                    addResult("切断しました", "status");
+
+                    if (isRecording) {
+                        stopRecording();
+                    }
+                };
+            });
+
+            // WebSocket切断
+            disconnectBtn.addEventListener("click", () => {
+                if (ws) {
+                    ws.close();
                 }
-            };
+            });
 
-            ws.onerror = (error) => {
-                addLog(`❌ エラー: ${error}`);
-            };
-
-            ws.onclose = () => {
-                addLog('🔌 WebSocket接続が切断されました');
-                updateStatus(false);
-                ws = null;
-            };
-        }
-
-        function disconnect() {
-            if (ws) {
-                ws.close();
-                addLog('切断しました');
-            }
-        }
-
-        function handleFileSelect() {
-            const fileInput = document.getElementById('fileInput');
-            const fileInfo = document.getElementById('fileInfo');
-            const uploadBtn = document.getElementById('uploadBtn');
-            
-            selectedFile = fileInput.files[0];
-            if (selectedFile) {
-                const sizeKB = (selectedFile.size / 1024).toFixed(2);
-                const samples = selectedFile.size / 4; // f32 = 4 bytes
-                const duration = (samples / 16000).toFixed(2);
-                
-                fileInfo.style.display = 'block';
-                fileInfo.innerHTML = `
-                    📄 ファイル: ${selectedFile.name}<br>
-                    📊 サイズ: ${sizeKB} KB (${samples.toLocaleString()} samples)<br>
-                    ⏱️ 推定時間: ${duration} 秒 (16kHz想定)
-                `;
-                uploadBtn.disabled = false;
-                addLog(`ファイル選択: ${selectedFile.name} (${sizeKB} KB)`);
-            }
-        }
-
-        async function uploadFile() {
-            if (!selectedFile || !ws || ws.readyState !== WebSocket.OPEN) {
-                addLog('❌ ファイルが選択されていないか、接続されていません');
-                return;
-            }
-
-            addLog(`📤 アップロード開始: ${selectedFile.name}`);
-            const arrayBuffer = await selectedFile.arrayBuffer();
-            
-            ws.send(arrayBuffer);
-            addLog(`✅ 送信完了 (${arrayBuffer.byteLength} bytes)`);
-            
-            const result = document.getElementById('result');
-            result.className = 'result loading';
-            result.textContent = '⏳ 文字起こし処理中...';
-        }
-
-        async function toggleRecording() {
-            const recordBtn = document.getElementById('recordBtn');
-            const recordInfo = document.getElementById('recordInfo');
-
-            if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+            // 録音開始
+            startRecordBtn.addEventListener("click", async () => {
                 try {
-                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    audioContext = new AudioContext({ sampleRate: 16000 });
-                    addLog('🎤 録音を開始しました (16kHz)');
-                    
-                    mediaRecorder = new MediaRecorder(stream);
-                    audioChunks = [];
-                    
-                    mediaRecorder.ondataavailable = (event) => {
-                        audioChunks.push(event.data);
-                    };
-                    
-                    mediaRecorder.onstop = async () => {
-                        addLog('🛑 録音を停止しました');
-                        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-                        await processRecordedAudio(audioBlob);
-                        stream.getTracks().forEach(track => track.stop());
-                    };
-                    
-                    mediaRecorder.start();
-                    recordBtn.textContent = '⏹️ 録音停止';
-                    recordBtn.classList.add('recording');
-                    recordInfo.style.display = 'block';
-                    recordInfo.textContent = '🔴 録音中...';
-                    
-                } catch (err) {
-                    addLog(`❌ マイクアクセスエラー: ${err.message}`);
-                }
-            } else {
-                mediaRecorder.stop();
-                recordBtn.textContent = '🎙️ 録音開始';
-                recordBtn.classList.remove('recording');
-                recordInfo.style.display = 'none';
-            }
-        }
+                    audioContext = new (
+                        window.AudioContext || window.webkitAudioContext
+                    )({
+                        sampleRate: 16000, // Whisperは16kHzを推奨
+                    });
 
-        async function processRecordedAudio(audioBlob) {
-            try {
-                addLog('🔄 音声を16kHz PCM f32に変換中...');
-                
-                const arrayBuffer = await audioBlob.arrayBuffer();
-                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-                
-                // Resample to 16kHz if needed
-                let audioData;
-                if (audioBuffer.sampleRate !== 16000) {
-                    const offlineContext = new OfflineAudioContext(1, audioBuffer.duration * 16000, 16000);
-                    const source = offlineContext.createBufferSource();
-                    source.buffer = audioBuffer;
-                    source.connect(offlineContext.destination);
-                    source.start(0);
-                    const resampledBuffer = await offlineContext.startRendering();
-                    audioData = resampledBuffer.getChannelData(0);
-                } else {
-                    audioData = audioBuffer.getChannelData(0);
-                }
-                
-                // Convert to f32 binary
-                const pcmData = new Float32Array(audioData);
-                const bytes = new Uint8Array(pcmData.buffer);
-                
-                addLog(`✅ 変換完了: ${pcmData.length} samples (${audioBuffer.duration.toFixed(2)}秒)`);
-                
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(bytes);
-                    addLog(`📤 送信完了 (${bytes.byteLength} bytes)`);
-                    
-                    const result = document.getElementById('result');
-                    result.className = 'result loading';
-                    result.textContent = '⏳ 文字起こし処理中...';
-                }
-            } catch (err) {
-                addLog(`❌ 音声処理エラー: ${err.message}`);
-            }
-        }
+                    mediaStream = await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            channelCount: 1,
+                            sampleRate: 16000,
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            autoGainControl: true,
+                        },
+                    });
 
-        // 初期化
-        addLog('ページを読み込みました');
-        addLog('接続ボタンをクリックしてWebSocketサーバーに接続してください');
-    </script>
-</body>
+                    const source =
+                        audioContext.createMediaStreamSource(mediaStream);
+
+                    // ScriptProcessorNodeまたはAudioWorkletを使用
+                    processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+                    let audioBuffer = [];
+                    const CHUNK_SIZE = 16000; // 1秒分のデータ
+
+                    processor.onaudioprocess = (e) => {
+                        if (!isRecording) return;
+
+                        const inputData = e.inputBuffer.getChannelData(0);
+                        const float32Data = new Float32Array(inputData);
+
+                        // バッファに追加
+                        audioBuffer.push(...float32Data);
+
+                        // 1秒分たまったら送信
+                        if (audioBuffer.length >= CHUNK_SIZE) {
+                            const chunk = new Float32Array(
+                                audioBuffer.slice(0, CHUNK_SIZE),
+                            );
+                            audioBuffer = audioBuffer.slice(CHUNK_SIZE);
+
+                            if (ws && ws.readyState === WebSocket.OPEN) {
+                                ws.send(chunk.buffer);
+                                console.log(
+                                    `Sent ${chunk.length} samples to server`,
+                                );
+                            }
+                        }
+                    };
+
+                    source.connect(processor);
+                    processor.connect(audioContext.destination);
+
+                    isRecording = true;
+                    updateStatus(
+                        "recording",
+                        "🔴 録音中... (VADが音声を検出中)",
+                    );
+                    startRecordBtn.disabled = true;
+                    stopRecordBtn.disabled = false;
+                    addResult("録音を開始しました。話してください。", "status");
+                } catch (error) {
+                    console.error("Microphone access error:", error);
+                    addResult(
+                        `マイクへのアクセスエラー: ${error.message}`,
+                        "error",
+                    );
+                }
+            });
+
+            // 録音停止
+            stopRecordBtn.addEventListener("click", () => {
+                stopRecording();
+            });
+
+            function stopRecording() {
+                isRecording = false;
+
+                if (processor) {
+                    processor.disconnect();
+                    processor = null;
+                }
+
+                if (mediaStream) {
+                    mediaStream.getTracks().forEach((track) => track.stop());
+                    mediaStream = null;
+                }
+
+                if (audioContext) {
+                    audioContext.close();
+                    audioContext = null;
+                }
+
+                updateStatus("connected", "✅ 接続中");
+                startRecordBtn.disabled = false;
+                stopRecordBtn.disabled = true;
+                addResult("録音を停止しました", "status");
+            }
+
+            function updateStatus(type, text) {
+                statusBar.className = `status ${type}`;
+                statusBar.textContent = text;
+            }
+
+            function addResult(
+                text,
+                type = "result",
+                segments = null,
+                duration = null,
+            ) {
+                // 初回の場合、プレースホルダーをクリア
+                if (
+                    results.children.length === 1 &&
+                    results.children[0].textContent.includes(
+                        "結果がここに表示されます",
+                    )
+                ) {
+                    results.innerHTML = "";
+                }
+
+                const item = document.createElement("div");
+                item.className = `result-item ${type}`;
+
+                const timestamp = document.createElement("div");
+                timestamp.className = "timestamp";
+                timestamp.textContent = new Date().toLocaleTimeString("ja-JP");
+
+                const textDiv = document.createElement("div");
+                textDiv.className = "text";
+                textDiv.textContent = text;
+
+                item.appendChild(timestamp);
+                item.appendChild(textDiv);
+
+                if (type === "result" || type === "partial") {
+                    const vadInfo = document.createElement("div");
+                    vadInfo.className = "vad-info";
+                    vadInfo.textContent =
+                        type === "partial"
+                            ? "⚡ 部分結果（続きがあります）"
+                            : "✓ Silero VADで音声区間を検出済み";
+                    item.appendChild(vadInfo);
+
+                    // セグメント情報の表示
+                    if (segments && segments.length > 0) {
+                        const segmentList = document.createElement("div");
+                        segmentList.className = "segment-list";
+
+                        const segmentTitle = document.createElement("div");
+                        segmentTitle.style.fontWeight = "bold";
+                        segmentTitle.style.marginBottom = "4px";
+                        segmentTitle.textContent = `📊 セグメント情報 (${segments.length}件):`;
+                        segmentList.appendChild(segmentTitle);
+
+                        segments.forEach((seg, index) => {
+                            const segItem = document.createElement("div");
+                            segItem.className = "segment-item";
+                            segItem.innerHTML = `<span class="segment-time">${seg.start.toFixed(2)}s - ${seg.end.toFixed(2)}s</span>: ${seg.text}`;
+                            segmentList.appendChild(segItem);
+                        });
+
+                        if (duration) {
+                            const durationInfo = document.createElement("div");
+                            durationInfo.style.marginTop = "4px";
+                            durationInfo.style.color = "#999";
+                            durationInfo.textContent = `総時間: ${duration.toFixed(2)}秒`;
+                            segmentList.appendChild(durationInfo);
+                        }
+
+                        item.appendChild(segmentList);
+                    }
+                }
+
+                results.insertBefore(item, results.firstChild);
+
+                // 最大20件まで保持
+                while (results.children.length > 20) {
+                    results.removeChild(results.lastChild);
+                }
+            }
+
+            // ページ離脱時のクリーンアップ
+            window.addEventListener("beforeunload", () => {
+                if (isRecording) {
+                    stopRecording();
+                }
+                if (ws) {
+                    ws.close();
+                }
+            });
+        </script>
+    </body>
 </html>
